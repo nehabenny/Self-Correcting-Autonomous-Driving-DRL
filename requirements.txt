@@ -1,0 +1,7 @@
+numpy
+torch
+gym==0.21.0
+stable-baselines3[extra]
+carla==0.9.13
+matplotlib
+tensorboard
