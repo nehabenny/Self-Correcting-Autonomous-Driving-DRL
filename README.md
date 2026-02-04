@@ -1,50 +1,96 @@
-# Self-Correcting Autonomous Driving Agent (MetaDrive + SB3)
+# 🏎️ Self-Correcting Autonomous Driving (DRL)
 
-This project implements a Self-Correcting Autonomous Driving agent using MetaDrive and Stable-Baselines3, specifically tuned for macOS Arm64 compatibility and enhanced sensor fusion.
+An advanced Reinforcement Learning pipeline for autonomous driving using **MetaDrive** and **Stable Baselines3**. This project focuses on **Vision-Only ("Tesla-style")** perception, modular architecture, and high-speed training optimization.
+
+---
 
 ## 🚀 Key Features
-- **Integration Layer**: Pinned dependencies and extensive monkey-patching to avoid macOS rendering/math conflicts (e.g., Panda3D shader and glTF loader errors).
-- **Sensor Fusion**: Custom `SensorFusionEnv` combining **RGB Camera** (Visual) and **LiDAR** (Vector) data.
-- **Enhanced Vehicle Detection**: Now tracks the **8 nearest vehicles** explicitly in the vector observation, improving traffic awareness.
-- **Curriculum Training**: Automated Stage 1 (Straight Roads) and Stage 2 (Tough Intersections) pipeline.
-- **Real-time Visualization**: Active LiDAR visualization in the 3D window to verify agent perception.
 
-## 🛠 Setup Instructions
+### 1. 🏗️ Modular Architecture
+The codebase is split into distinct, simulator-agnostic components:
+- **`env_wrapper.py`**: Manages perception (64x64 Semantic-only) and safety logic.
+- **`agent_logic.py`**: Handles PPO model initialization and hyperparameter tuning.
+- **`curriculum_manager.py`**: Controls the transition from Straight Roads (Stage 1) to Complex S-Curves (Stage 2).
+- **`metrics_logger.py`**: Human-readable terminal output and granular reward tracking.
 
-### 1. Prerequisites
-Ensure you have `python3` (Python 3.9 recommended) installed.
+### 2. ⚡ Turbo Mode (Fast-Track Training)
+Optimized for rapid development and CPU-only training:
+- **Resolution**: 64x64 (4x faster than HD).
+- **Sensing**: **Semantic-Only Perception**. The agent sees a simplified map (Road vs. Non-Road), allowing for rapid learning of lane boundaries.
+- **Speed**: Achieves **400+ FPS**. Stage 1 (20,000 steps) completes in **~50 seconds**.
+- **Learning Rate**: Boosted to `1e-3` for faster philosophy updates.
 
-### 2. Installation
-Run the automated setup script:
+### 3. 🛡️ Strict Safety Engine
+Advanced failure conditions to ensure civil driving:
+- **Yellow Line Termination**: Crossing the middle yellow line results in an **immediate failure (reset)** and a -20.0 penalty.
+- **Vision-Only Boundaries**: Detects off-road and collision events using purely visual/semantic feedback.
+- **Self-Correcting Rewards**: Penalties are weighted to prioritize "Not Crashing" over "Speeding."
+
+### 4. 📊 Training Transparency
+- **Single-Line Status**: Clean terminal output with real-time Score, Distance, Speed, and Safety metrics.
+- **Evolution Tracker**: Use `progress.py` to analyze milestones (20%, 40%, etc.) and see exactly how the agent improves over time.
+- **RL Glossary**: Included documentation explaining technical terms like `entropy_loss` and `explained_variance`.
+
+---
+
+## 🛠️ Getting Started
+
+### Initial Setup
+Ensure you have the environment ready:
 ```bash
-chmod +x setup_env.sh
-./setup_env.sh
+bash setup_env.sh
 ```
 
-## 🏃‍♂️ Usage
-
-**Always use the virtual environment python:**
-`./driving_env/bin/python3 <script_name>.py`
-
-### 1. The Complete Pipeline (Recommended)
-Train the agent for ~5 minutes then automatically launch the visual test:
+### Start Fast-Track Training
+Run the standard modular pipeline:
 ```bash
-./driving_env/bin/python3 run_full_pipeline.py
+PYTHONUTF8=1 ./driving_env/bin/python3 train.py
 ```
 
-### 2. Manual Training & Testing
-- **Headless Training**: `./driving_env/bin/python3 train.py` (Fastest)
-- **Visual Training**: `./driving_env/bin/python3 train_visual.py` (Watch it learn)
-- **Only Testing**: `./driving_env/bin/python3 test.py` (Visualizes the saved `final_model.zip`)
+### Visual Training (3D Window)
+To see the agent learn in real-time:
+```bash
+PYTHONUTF8=1 ./driving_env/bin/python3 train_visual.py
+```
 
-## 📂 File Structure
-- `environment.py`: Custom environment with sensor fusion and macOS patches.
-- `train.py`: Sequential training logic (Stage 1 -> Stage 2).
-- `test.py`: Visual inference script.
-- `run_full_pipeline.py`: Master orchestrator.
-- `train_visual.py`: Training script with a real-time rendering callback.
-- `requirements.txt`: Version-locked dependencies for stability.
+### Analyze Learning Progress
+Compare snapshots of the agent's brain across its lifetime:
+```bash
+./driving_env/bin/python3 progress.py
+```
 
-## ⚠️ Notes for macOS Users
-- The `environment.py` includes critical monkey-patches for `simplepbr`, `gltf`, and `metadrive` to work on Apple Silicon.
-- If the simulation window doesn't appear, ensure you are not running over a non-GUI session (like standard SSH).
+### Test Trained Agent
+Run the final model in the visual simulator:
+```bash
+./driving_env/bin/python3 test.py
+```
+
+---
+
+## 📈 Results (Stage 1)
+| Milestone | Steps | Result |
+| :--- | :--- | :--- |
+| **0%** | 0 | Random steering, immediate off-road. |
+| **20%** | 4,000 | Baseline exploration. |
+| **60%** | 12,000 | **🌟 Breakthrough**: Holds lane consistently. |
+| **100%** | 20,000 | Reliable lane-keeping on straight roads. |
+
+---
+
+## 📂 Project Structure
+```text
+.
+├── agent_logic.py      # Brain (PPO Strategy)
+├── env_wrapper.py      # Body (Sensors & Rewards)
+├── train.py            # Headless Training Script
+├── train_visual.py     # 3D Visual Training Script
+├── test.py             # Inference/Demo Script
+├── progress.py         # AI Evolution Analyzer
+├── metrics_logger.py   # Terminal UI & Callbacks
+└── models/             # Saved Brains & Milestones
+```
+
+---
+
+## 🛑 Warning: Sensor Mismatch
+This code uses **Vision-Only (Semantic)** sensing. If loading an old LiDAR-based model, use `test.py`'s built-in detection to troubleshoot or delete old `.zip` files in `models/`.

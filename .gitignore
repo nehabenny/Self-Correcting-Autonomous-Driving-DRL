@@ -1,21 +1,5 @@
-# Virtual Environment
 driving_env/
-venv/
-.env/
-
-# Logs
 logs/
-events.out.tfevents.*
-
-# Byte-compiled / optimized / DLL files
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-
-# OS generated files
 .DS_Store
-
-# Large checkpoint files (Optional: keep main models but ignore intermediate ones)
-models/checkpoints_stage1/
-models/checkpoints_stage2/
-!models/*.zip

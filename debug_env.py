@@ -8,28 +8,23 @@ def debug():
     
     print("Resetting...")
     ret = env.reset()
-    print(f"Reset returned type: {type(ret)}")
     if isinstance(ret, tuple):
-        print(f"Reset returned {len(ret)} values")
         obs = ret[0]
     else:
         obs = ret
         
-    print(f"Obs type: {type(obs)}")
-    if isinstance(obs, dict):
-        print("Obs keys:", obs.keys())
-        for k, v in obs.items():
-            print(f"Key {k}: Type {type(v)}, Shape {getattr(v, 'shape', 'N/A')}")
-    else:
-        print("Obs is not a dict:", obs)
+    print(f"Observation keys: {obs.keys()}")
+    for k, v in obs.items():
+        print(f"  - {k}: shape {v.shape}, dtype {v.dtype}")
 
-    print("Stepping...")
+    print("\nStepping...")
     try:
         action = env.action_space.sample()
         ret = env.step(action)
-        print(f"Step returned {len(ret)} values")
         obs = ret[0]
-        print(f"Step Obs type: {type(obs)}")
+        print(f"Step Observation keys: {obs.keys()}")
+        for k, v in obs.items():
+            print(f"  - {k}: shape {v.shape}, dtype {v.dtype}")
     except Exception as e:
         print(f"Step failed: {e}")
         

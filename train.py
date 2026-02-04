@@ -1,71 +1,75 @@
 import os
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
-from environment import make_env
-
-class RewardThresholdCallback(BaseCallback):
-    """
-    Stop training if mean reward reaches threshold.
-    """
-    def __init__(self, threshold, verbose=0):
-        super(RewardThresholdCallback, self).__init__(verbose)
-        self.threshold = threshold
-
-    def _on_step(self) -> bool:
-        if len(self.model.ep_info_buffer) > 0:
-            mean_reward = sum([info['r'] for info in self.model.ep_info_buffer]) / len(self.model.ep_info_buffer)
-            if mean_reward >= self.threshold:
-                if self.verbose > 0:
-                    print(f"Stopping training: reward {mean_reward} reached threshold {self.threshold}")
-                return False
-        return True
+import torch
+from agent_logic import get_ppo_agent
+from curriculum_manager import RewardThresholdCallback, get_curriculum_config
+from env_wrapper import make_env
+from stable_baselines3.common.callbacks import CheckpointCallback
+from metrics_logger import TransparencyCallback
 
 def train():
+    """
+    Main training orchestrator.
+    Now modularized to demonstrate the Phase 1 (MetaDrive) setup
+    which will be migrated to Phase 2 (CARLA) with minimal changes.
+    """
     os.makedirs("models", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
     
-    # Stage 1: Straight Roads
-    print("=== Stage 1: Training on Straight Roads (Map: S) ===")
-    env = make_env(render=False, map_type="S")
+    device = "cpu"
+    print(f"=== Starting Modular Training Workflow (Device: {device}) ===")
     
-    # Simple checkpointing
-    checkpoint_callback = CheckpointCallback(
-        save_freq=25000, 
-        save_path='./models/checkpoints_stage1',
-        name_prefix='stage1_model'
-    )
-    stop_callback = RewardThresholdCallback(threshold=35.0, verbose=1)
-    
-    model = PPO(
-        "MultiInputPolicy", 
-        env, 
-        verbose=1, 
-        tensorboard_log="./logs/training"
-    )
-    
-    print("Training Stage 1 (50,000 steps - ~1 min)...")
-    model.learn(total_timesteps=50000, callback=[checkpoint_callback, stop_callback], progress_bar=True)
-    model.save("models/stage1_final")
-    env.close()
+    stages = get_curriculum_config()
+    model = None
 
-    # Stage 2: Tough Map (Intersections/Curves)
-    print("\n=== Stage 2: Training on Tough Map (Map: SCX) ===")
-    env = make_env(render=False, map_type="SCX")
-    
-    checkpoint_callback2 = CheckpointCallback(
-        save_freq=25000, 
-        save_path='./models/checkpoints_stage2',
-        name_prefix='final_model'
-    )
-    stop_callback2 = RewardThresholdCallback(threshold=40.0, verbose=1)
-    
-    model.set_env(env)
-    print("Training Stage 2 (100,000 steps - ~4 mins)...")
-    model.learn(total_timesteps=100000, callback=[checkpoint_callback2, stop_callback2], progress_bar=True)
-    model.save("models/final_model")
-    env.close()
-    
-    print("Training complete. Models saved in ./models/")
+    try:
+        for i, stage in enumerate(stages):
+            stage_num = i + 1
+            print(f"\n🚀 {stage['name']} (Map: {stage['map']})")
+            
+            # 1. Initialize/Switch Environment (Wrapped)
+            env = make_env(render=False, map_type=stage['map'])
+            
+            # 2. Get/Update Agent (Simulator-Agnostic)
+            if model is None:
+                model = get_ppo_agent(env, device=device)
+            else:
+                model.set_env(env)
+            
+            # 3. Setup Callbacks
+            checkpoint_path = "./models/milestones" if stage_num == 1 else f"./models/checkpoints_stage{stage_num}"
+            checkpoint_callback = CheckpointCallback(
+                save_freq=4000 if stage_num == 1 else 50000, 
+                save_path=checkpoint_path,
+                name_prefix=f"milestone" if stage_num == 1 else f"stage{stage_num}_model"
+            )
+            stop_callback = RewardThresholdCallback(threshold=stage['threshold'], verbose=1)
+            transparency_callback = TransparencyCallback()
+            
+            # 4. Train
+            print(f"Training Stage {stage_num} (Goal: {stage['threshold']} reward)...")
+            model.learn(
+                total_timesteps=20000 if stage_num == 1 else 50000, 
+                callback=[checkpoint_callback, stop_callback, transparency_callback], 
+                progress_bar=False,
+                reset_num_timesteps=False # Maintain progress across stages
+            )
+            
+            # 5. Save Progress
+            model.save(f"models/stage{stage_num}_final")
+            env.close()
+            print(f"✅ Stage {stage_num} Complete.")
+
+        model.save("models/final_model")
+        print("\n🏁 Curriculum training complete. Final model saved in ./models/final_model")
+
+    except KeyboardInterrupt:
+        print("\n⚠️ Training interrupted by user.")
+        if model is not None:
+            save_path = "models/interrupted_model"
+            model.save(save_path)
+            print(f"💾 Progress saved to {save_path}.zip")
+        if 'env' in locals():
+            env.close()
 
 if __name__ == "__main__":
     train()
