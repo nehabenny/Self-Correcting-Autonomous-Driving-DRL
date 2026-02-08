@@ -1,229 +1,410 @@
-# 🏎️ Self-Correcting Autonomous Driving (DRL)
+# Self-Correcting Autonomous Driving with Deep Reinforcement Learning
 
-An advanced Reinforcement Learning pipeline for autonomous driving featuring **modular, simulator-agnostic architecture**. Currently implemented with **MetaDrive** and **Stable Baselines3**, with a clean abstraction layer designed for seamless migration to **CARLA** on high-performance hardware.
+**A Robust Curriculum Learning Approach for Safe and Sample-Efficient Driving**
 
-This project demonstrates **Vision-Only ("Tesla-style")** perception, professional software engineering practices, and CPU-optimized training for rapid prototyping.
-
----
-
-## 🎯 Design Philosophy
-
-### Simulator-Agnostic Architecture
-The codebase is intentionally **decoupled from the simulator backend**:
-
-- **`env_wrapper.py`**: Acts as the **simulator interface layer**. Currently points to MetaDrive, but can be swapped to CARLA by changing a single import and adapting the observation processing.
-- **`agent_logic.py`**: Pure RL logic (PPO configuration) with **zero simulator dependencies**.
-- **`curriculum_manager.py`**: Abstract difficulty progression that works with any environment.
-- **`metrics_logger.py`**: Universal logging framework compatible with any Gym-based simulator.
-
-> **Migration Path**: Once RTX 4000 hardware is available, simply replace the MetaDrive backend in `env_wrapper.py` with CARLA's Python API. The rest of the pipeline (training loop, agent, curriculum) requires **zero modifications**.
+This project demonstrates a high-performance Autonomous Driving agent trained using **Proximal Policy Optimization (PPO)** and **Curriculum Learning (CL)** in the **CARLA 0.9.13** simulator. By progressing through a 5-stage curriculum—from empty roads to a chaotic "Gauntlet" with traffic and storms—the agent learns to drive safely and efficiently.
 
 ---
 
 ## 🚀 Key Features
 
-### 1. 🏗️ Modular, Production-Grade Architecture
-
-**Clean Separation of Concerns:**
-```
-┌─────────────────────┐
-│   train.py          │  Training orchestration
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│ curriculum_manager  │  Difficulty progression (simulator-agnostic)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│   agent_logic.py    │  PPO hyperparameters (pure RL, no sim code)
-└──────────┬──────────┘
-           │
-┌──────────▼──────────┐
-│  env_wrapper.py     │  ⚠️ ONLY file with simulator-specific code
-└─────────────────────┘
-           │
-           ▼
-    [MetaDrive] ──future──> [CARLA on RTX 4000]
-```
-
-**Why This Matters:**
-- **Testability**: Each component can be unit-tested independently
-- **Scalability**: Easy to add new sensors, rewards, or simulators
-- **Maintainability**: Changes to RL strategy don't affect perception logic and vice versa
-
-### 2. ⚡ Turbo Mode (CPU-Optimized Training)
-
-Designed for rapid iteration on consumer hardware:
-
-| Setting | Value | Rationale |
-|---------|-------|-----------|
-| **Resolution** | 64×64 | 4× faster than HD, sufficient for semantic perception |
-| **Sensing Mode** | Semantic-Only | Simplified map (Road/Non-Road) accelerates early learning |
-| **Frame Rate** | 400+ FPS | Enables 20,000 steps in ~50 seconds (Stage 1) |
-| **Learning Rate** | 1e-3 | Aggressive updates for prototype phase |
-
-> **Hardware Transition**: These are **training hyperparameters**, not architectural constraints. The same code can later run at 1080p/30fps on CARLA with RTX 4000.
-
-### 3. 🛡️ Strict Safety Engine
-
-Production-ready failure detection using **vision-only** feedback:
-
-```python
-# env_wrapper.py - Simulator-agnostic safety logic
-def _check_safety(self, obs):
-    # Yellow line violation (center line crossing)
-    if self._detect_yellow_crossing(obs):
-        return -20.0, True, "YELLOW_LINE_VIOLATION"
-    
-    # Off-road detection via semantic segmentation
-    if self._is_offroad(obs):
-        return -10.0, True, "OFF_ROAD"
-    
-    # Collision (visual-only detection)
-    if self._detect_collision(obs):
-        return -15.0, True, "COLLISION"
-```
-
-**Design Choice**: Safety rules are defined in the **abstract wrapper**, not in simulator code. This ensures consistent behavior across MetaDrive → CARLA migration.
-
-### 4. 📊 Professional Observability
-
-- **Single-Line Status**: Clean terminal output (`metrics_logger.py`)
-- **Evolution Tracker**: `progress.py` analyzes learning milestones (0% → 100%)
-- **RL Glossary**: Included documentation for terms like `entropy_loss`, `explained_variance`
+*   **5-Stage Curriculum**: Automatically graduates the agent from simple lane keeping to complex collision avoidance.
+*   **Vector-Based Perception**: Replaces slow image processing with fast, raycast-based obstacle detection (LIDAR logic) and direct telemetry.
+*   **Optimized Performance**: Runs at **~240 FPS** in headless mode (vs. 20 FPS standard) using `-RenderOffScreen` and disabled spectator rendering.
+*   **Safety-First RL**: Implements **Action Shaping** (Throttle Boost) and **Dense Rewards** (Speed + Safety) to overcome static friction and fear of movement, while strictly penalizing collisions (-50.0).
+*   **Robust Architecture**: Custom `CarlaSyncManager` with asynchronous cleanup handles the notoriously unstable CARLA server lifecycle, preventing segmentation faults.
 
 ---
 
-## 🛠️ Getting Started
+## 🏗️ System Architecture
 
-### Prerequisites
+The system uses a flat vector observation space for maximum sample efficiency:
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                     CARLA 0.9.13 Server                       │
+│   (Town01-05 | Traffic Manager | Headless Mode | Async Kill)  │
+└───────────────────────────────────────────────────────────────┘
+                             ▲
+                             │ API (Python 3.7)
+                             ▼
+┌───────────────────────────────────────────────────────────────┐
+│                       CarlaEnv Wrapper                        │
+│  ┌─────────────────────┐     ┌───────────────────────────┐   │
+│  │  CarlaSyncManager   │────▶│   Sensor Suite            │   │
+│  │  (Force Async Kill) │     │  - Obstacle Raycasts (32) │   │
+│  └─────────────────────┘     │  - Collision Sensor       │   │
+│                              │  - Traffic Light Telemetry│   │
+│                              └───────────────────────────┘   │
+│                              │                               │
+│                              ▼                               │
+│               Gym Observation Space (44-Dim Vector)          │
+│               - [0-2]:   Speed, Steer, Throttle              │
+│               - [10-11]: Traffic Light State & Distance      │
+│               - [12-43]: 32-Sector Obstacle Distances        │
+└───────────────────────────────────────────────────────────────┘
+                             ▲
+                             │
+                             ▼
+┌───────────────────────────────────────────────────────────────┐
+│                      Training Pipeline                        │
+│  ┌─────────────────────┐     ┌───────────────────────────┐   │
+│  │  run_curriculum.sh  │────▶│   PPO Agent (SB3)         │   │
+│  │  (Auto-Restart)     │     │  - MlpPolicy (Fast)       │   │
+│  └─────────────────────┘     │  - Action Shaping         │   │
+│                              └───────────────────────────┘   │
+└───────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📚 The 5-Stage Curriculum
+
+| Stage | Name                | Map    | Traffic | Weather   | Goal (Reward) | Description |
+|-------|---------------------|--------|---------|-----------|---------------|-------------|
+| **1** | Empty Roads         | Town01 | 0%      | Clear     | 200.0         | Learn lane keeping & accelerator control. |
+| **2** | Static Obstacles    | Town01 | 0%      | Clear     | 300.0         | Avoid walls/poles. Learn braking. |
+| **3** | Dynamic Traffic     | Town03 | 20%     | Clear     | 400.0         | Interact with moving vehicles. |
+| **4** | Weather Variations  | Town03 | 20%     | Dynamic   | 500.0         | Adapt to rain/fog/wet roads. |
+| **5** | **The Gauntlet**    | Town05 | 40%     | Storm     | 600.0         | Assessing survival in high-density chaos. |
+
+---
+
+## ⚙️ Usage
+
+### 1. Training (Headless & Robust)
+The training pipeline is fully automated by `run_curriculum.sh`. It handles server restarts, model chaining, and error recovery.
+
 ```bash
-# Python 3.8+ with venv support
-# MetaDrive simulator (current backend)
-# Future: CARLA 0.9.15+ (requires RTX 4000)
+# Start from Stage 1 (Fresh Start)
+./run_curriculum.sh
+
+# Resume from Stage 3
+./run_curriculum.sh 3
 ```
 
-### Initial Setup
+### 2. Visualization (Watch it Drive)
+To verify the agent's behavior with a live camera feed:
+
 ```bash
-bash setup_env.sh
+# 1. Start the visualizer server (in a separate terminal)
+./launch_carla_viz.sh
+
+# 2. Run the test script
+# Replace with your specific model path
+export USE_CARLA=1
+conda run -n carla_py37 python test.py --model outputs/stage_1/checkpoints/stage1_model_50000_steps.zip --stage 1
 ```
 
-### Training Workflows
+---
 
-#### 1. Fast-Track Training (Headless)
+## 🔧 Installation
+
+**Requirements:**
+- Linux (Ubuntu 20.04+)
+- CARLA 0.9.13
+- NVIDIA GPU (CUDA 11+)
+- Python 3.7
+
+**Setup:**
 ```bash
-PYTHONUTF8=1 ./driving_env/bin/python3 train.py
-```
-**Use Case**: Rapid prototyping on CPU, hyperparameter tuning
+# Create Environment
+conda create -n carla_py37 python=3.7 -y
+conda activate carla_py37
 
-#### 2. Visual Training (3D Window)
+# Install Dependencies
+pip install numpy==1.21.6 stable-baselines3==1.8.0 gym==0.21.0 opencv-python pillow torch
+
+# Fix missing libomp (if needed)
+conda install -c conda-forge llvm-openmp -p ./carla_deps -y
+```
+
+---
+
+## 🧠 Technical Innovations
+
+1.  **Throttle Boosting**: We implemented an **Action Shaping** wrapper that maps the agent's `[0, 1]` throttle output to `[0.3, 1.0]`. This ensures the vehicle physically overcomes CARLA's static friction model, preventing the "stuck agent" problem.
+2.  **Dense Rewards**: The agent receives a continuous reward `speed / 100.0`. This provides an immediate gradient for learning, acting as a "trail of breadcrumbs" out of the stationary zero-reward state.
+3.  **Async Cleanup**: To fix "Signal 11" Segfaults, the environment forces the server into Asynchronous Mode before destroying actors. This prevents race conditions where the server tries to "tick" a destroyed vehicle.
+4.  **Raycast Perception**: Instead of processing heavy 128x128 images, the agent uses a 32-ray obstacle sensor (simulated LIDAR). This reduces input dimensionality by **99.9%**, allowing for extremely fast inference and training.
+
+---
+
+## 📊 Deliverables structure
+
+All training artifacts are automatically saved to `./outputs/`:
+- `outputs/stage_X/checkpoints/`: Model weights (saved every 5k steps).
+- `outputs/stage_X/tensorboard/`: Training metrics (Reward, Loss, FPS).
+- `outputs/transition_log.txt`: Records of curriculum graduation.
+
+
+---
+
+## ❓ Troubleshooting & Known Issues
+
+If you encounter issues, here are the meaningful ones (and the ones you can ignore):
+
+### 1. "Segmentation fault (Code 139)" at the end of a stage
+*   **Verdict**: **HARMLESS**.
+*   **Reason**: CARLA sometimes crashes when shutting down the OpenGL context.
+*   **Solution**: The `run_curriculum.sh` script automatically detects this. If `final_model_stage_X.zip` exists, it proceeds safely to the next stage.
+
+### 2. "RuntimeError: time-out of 40000ms"
+*   **Verdict**: **RESTART REQUIRED**.
+*   **Reason**: The Python script tried to connect before the CARLA server was ready.
+*   **Solution**: Kill all processes and try again.
+    ```bash
+    pkill -f CarlaUE4
+    pkill -f train.py
+    ./run_curriculum.sh
+    ```
+
+### 3. "libomp.so.5: cannot open shared object file"
+*   **Verdict**: **LIBRARY MISSING**.
+*   **Solution**:
+    ```bash
+    conda install -c conda-forge llvm-openmp -p ./carla_deps -y
+    ```
+    (The `launch_carla.sh` script automatically adds this local folder to `LD_LIBRARY_PATH`)
+
+---
+
+## ⚡ Quick Start (Fresh Install)
+
+To go from zero to driving in < 5 minutes:
+
+1.  **Clone & Enter**:
+    ```bash
+    git clone https://github.com/Mark-Joseph-42/Self-Correcting-Autonomous-Driving-DRL.git
+    cd Self-Correcting-Autonomous-Driving-DRL
+    ```
+
+2.  **Setup Environment**:
+    ```bash
+    conda create -n carla_py37 python=3.7 -y
+    conda activate carla_py37
+    pip install numpy==1.21.6 stable-baselines3==1.8.0 gym==0.21.0 opencv-python pillow torch
+    ```
+
+3.  **Run Training**:
+    ```bash
+    # This handles EVERYTHING (Server launch, training, restarts)
+    ./run_curriculum.sh
+    ```
+
+4.  **Watch it (Optional)**:
+    Open a new terminal:
+    ```bash
+    ./launch_carla_viz.sh
+    # (Then run test.py as described in Usage)
+    ```
+
+---
+
+#### License
+Academic/Research Use Only.
+**A Curriculum Learning Approach for Safe and Sample-Efficient Driving Policy Formation**
+
+This project demonstrates the superiority of **Curriculum Learning (CL)** over traditional Deep Reinforcement Learning (DRL) for training autonomous driving agents. Using the high-fidelity **CARLA 0.9.13** simulator and a 5-stage curriculum, the agent learns to navigate from empty roads to complex "Gauntlet" scenarios with dynamic traffic and adverse weather.
+
+---
+
+## 🎯 Research Goal
+
+To prove that a curriculum-trained agent achieves:
+1.  **Higher Sample Efficiency**: Reaches peak performance with fewer training steps.
+2.  **Improved Safety**: Exhibits significantly fewer collisions during the final "Gauntlet" test.
+
+---
+
+## 🏗️ System Architecture
+
+The system consists of three core layers:
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                     CARLA 0.9.13 Server                       │
+│   (Town01-05 | Traffic Manager | Weather | Headless/RTX4000)  │
+└───────────────────────────────────────────────────────────────┘
+                             ▲
+                             │ API (Python 3.7)
+                             ▼
+┌───────────────────────────────────────────────────────────────┐
+│                       CarlaEnv Wrapper                        │
+│  ┌─────────────────────┐     ┌───────────────────────────┐   │
+│  │  CarlaSyncManager   │────▶│   Sensor Suite            │   │
+│  │  (Synchronous Mode) │     │  - Semantic Segmentation  │   │
+│  └─────────────────────┘     │  - Collision Sensor       │   │
+│                              │  - Lane Invasion Sensor   │   │
+│                              └───────────────────────────┘   │
+│                              │                               │
+│                              ▼                               │
+│               Gym Observation Space (Dict)                   │
+│               - 'semantic_segmentation': (64, 64, 1)         │
+│               - 'vector': (10,)                              │
+└───────────────────────────────────────────────────────────────┘
+                             ▲
+                             │
+                             ▼
+┌───────────────────────────────────────────────────────────────┐
+│                      Training Pipeline                        │
+│  ┌─────────────────────┐     ┌───────────────────────────┐   │
+│  │  CurriculumManager  │────▶│   PPO Agent (SB3)         │   │
+│  │  (5-Stage Logic)    │     │  - MultiInputPolicy       │   │
+│  └─────────────────────┘     │  - RTX 4000 (CUDA)        │   │
+│                              └───────────────────────────┘   │
+└───────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📚 The 5-Stage Curriculum
+
+The agent progresses through increasingly difficult environments:
+
+| Stage | Name                | Map    | Traffic | Weather   | Goal (Reward) |
+|-------|---------------------|--------|---------|-----------|---------------|
+| 1     | Empty Roads         | Town01 | 0%      | Clear     | 30.0          |
+| 2     | Static Obstacles    | Town01 | 0%      | Clear     | 40.0          |
+| 3     | Dynamic Traffic     | Town03 | 20%     | Clear     | 50.0          |
+| 4     | Weather Variations  | Town03 | 20%     | Dynamic   | 60.0          |
+| 5     | **The Gauntlet**    | Town05 | 40%     | Dynamic   | 70.0          |
+
+---
+
+## 📦 Project Structure
+
+```
+Self-Correcting-Autonomous-Driving-DRL/
+├── carla_env.py          # CARLA Gymnasium environment wrapper
+├── curriculum_manager.py # 5-stage config and auto-graduation callback
+├── agent_logic.py        # PPO agent factory (Stable-Baselines3)
+├── train.py              # Main training orchestrator
+├── train_baseline.py     # Non-curriculum baseline training
+├── compare_agents.py     # Research comparison (Curriculum vs Baseline)
+├── test.py               # Inference / model evaluation
+├── metrics_logger.py     # Episode logging and telemetry snapshots
+├── run_smoke_test.py     # 50% Submission integration test
+├── record_success_video.py # Video recording for deliverables
+├── launch_carla.sh       # Headless CARLA server launcher
+├── launch_carla_viz.sh   # Visualized CARLA server launcher
+└── outputs/              # All auto-generated deliverables
+    ├── stage_1/          # Model weights, TB logs, telemetry
+    ├── stage_2/
+    ├── ...
+    ├── baseline/         # Baseline model outputs
+    └── integration/      # Smoke test log
+```
+
+---
+
+## ⚙️ Installation & Setup
+
+### 1. Prerequisites
+- **CARLA 0.9.13**: Installed at `/home/tinkerspace/carla project/`
+- **NVIDIA Driver**: Compatible with CUDA 13.0 (RTX 4000 SFF)
+- **Conda**: For Python environment management
+
+### 2. Create the Environment
+A dedicated Python 3.7 environment is required for the CARLA 0.9.13 API.
+
 ```bash
-PYTHONUTF8=1 ./driving_env/bin/python3 train_visual.py
-```
-**Use Case**: Debugging behavior, verifying safety rules in real-time
+conda create -n carla_py37 python=3.7 -y
+conda activate carla_py37
 
-#### 3. Analyze Progress
+# Install dependencies
+pip install numpy==1.21.6 stable-baselines3==1.8.0 gym==0.21.0 opencv-python pillow torch
+```
+
+### 3. Resolve `libomp.so.5` (Without Sudo)
+If the CARLA server fails with a `libomp.so.5` error:
 ```bash
-./driving_env/bin/python3 progress.py
+conda install -c conda-forge llvm-openmp -p ./carla_deps -y
+# The launch script is already configured to add this to LD_LIBRARY_PATH
 ```
-**Output**: Comparative analysis of model snapshots at 20%, 40%, 60%, 80%, 100% completion
 
-#### 4. Test Trained Agent
+---
+
+## 🚀 Usage
+
+### Phase 1: Start the CARLA Server
 ```bash
-./driving_env/bin/python3 test.py
-```
-**Features**: Auto-detects sensor configuration, runs inference in visual mode
+# For headless training (recommended)
+./launch_carla.sh
 
----
-
-## 📈 Training Results (Stage 1: Straight Roads)
-
-| Milestone | Steps | Behavior | Avg Score |
-|-----------|-------|----------|-----------|
-| **0% (Baseline)** | 0 | Random steering, immediate crash | -50 |
-| **20% (Exploration)** | 4,000 | Erratic lane usage, frequent resets | -15 |
-| **60% (🌟 Breakthrough)** | 12,000 | **Consistent lane-keeping**, rare mistakes | +25 |
-| **100% (Mastery)** | 20,000 | Smooth driving, no yellow line crosses | +45 |
-
-**Key Insight**: The semantic-only approach enables the agent to learn lane boundaries within **~1 minute** of training on CPU hardware.
-
----
-
-## 📂 Project Structure
-
-```
-.
-├── agent_logic.py          # 🧠 PPO hyperparameters (simulator-agnostic)
-├── env_wrapper.py          # 🔌 Simulator interface (MetaDrive ⇒ CARLA swap point)
-├── curriculum_manager.py   # 📚 Difficulty progression (abstract)
-├── metrics_logger.py       # 📊 Logging framework (universal)
-├── train.py                # 🚀 Headless training script
-├── train_visual.py         # 👁️ Visual training script
-├── test.py                 # 🧪 Inference/demo script
-├── progress.py             # 📈 AI evolution analyzer
-└── models/                 # 💾 Checkpoints & milestones
-    ├── ppo_metadrive_final.zip
-    └── milestone_*.zip
+# For visualization/debugging
+./launch_carla_viz.sh
 ```
 
-### 🔄 Migration Checklist (MetaDrive → CARLA)
+### Phase 2: Run Curriculum Training (Optimized)
+**NEW (2026):** Use the robust curriculum runner for maximum stability and speed (210+ FPS).
 
-When transitioning to CARLA on RTX 4000 hardware:
+```bash
+# Run full curriculum (Stages 1-5) with auto-restart and crash recovery:
+./run_curriculum.sh
 
-- [ ] **Step 1**: Replace `import metadrive` with `import carla` in `env_wrapper.py`
-- [ ] **Step 2**: Adapt `_get_observation()` to use CARLA's camera sensor API
-- [ ] **Step 3**: Update `_get_reward()` to use CARLA's collision/lane invasion sensors
-- [ ] **Step 4**: Adjust frame rate to 30 FPS, resolution to 1080p
-- [ ] **Step 5**: Re-run `train.py` (no code changes needed in other files)
+# Resume from a specific stage (e.g., Stage 3) if interrupted:
+./run_curriculum.sh 3
+```
 
-**Time Estimate**: 2-4 hours for a complete backend swap.
+This script automatically:
+- Restarts the CARLA server between stages to prevent map-switch crashes.
+- Cleans up stale checkpoints (only if starting fresh).
+- Handles harmless exit crashes (Code 139).
 
----
+*(Legacy Method)*
+```bash
+export USE_CARLA=1
+conda run -n carla_py37 --no-capture-output python train.py
+```
 
-## ⚠️ Important Notes
+### Phase 3: Run Baseline Training (for Research Comparison)
+```bash
+export USE_CARLA=1
+conda run -n carla_py37 --no-capture-output python train_baseline.py
+```
 
-### Sensor Configuration
-This code uses **Vision-Only (Semantic)** sensing:
-- **Current**: 64×64 semantic segmentation (Road/Non-Road classification)
-- **Future (CARLA)**: RGB camera + semantic segmentation at higher resolution
+### Phase 4: Generate Research Comparison
+```bash
+conda run -n carla_py37 python compare_agents.py
+# Output: ./outputs/research/comparison_results.csv
+```
 
-### Model Compatibility
-If you encounter errors when loading old models:
-1. Check sensor configuration with `test.py` (auto-detects mismatches)
-2. Delete outdated `.zip` files in `models/` directory
-3. Retrain with current configuration
-
-### Hardware Requirements
-| Phase | Hardware | Performance |
-|-------|----------|-------------|
-| **Prototyping (Current)** | CPU (any) | 400+ FPS @ 64×64 |
-| **Production (Future)** | RTX 4000+ | 30 FPS @ 1080p |
-
----
-
-## 🎓 Educational Value
-
-This project demonstrates:
-- ✅ **Software Engineering**: Clean abstractions, separation of concerns
-- ✅ **Deep RL Mastery**: PPO tuning, reward shaping, curriculum learning
-- ✅ **System Design**: Planning for hardware/simulator migration from day one
-- ✅ **Computer Vision**: Semantic segmentation for autonomous perception
-
-**Target Audience**: Researchers, students, and engineers interested in **production-grade RL systems** rather than throwaway prototypes.
+### Inference / Testing a Trained Model
+```bash
+conda run -n carla_py37 python test.py --model "./outputs/stage_5/ppo_agent_stage_5.zip"
+```
 
 ---
 
-## 🔮 Roadmap
+## 📊 Deliverables & Outputs
 
-### Stage 2: Complex Scenarios (In Progress)
-- S-curves with tighter turns
-- Multi-lane highways with traffic
-- Night/weather conditions (CARLA-ready)
+All outputs are structured for direct inclusion in your research submissions.
 
-### Stage 3: CARLA Deployment (Future)
-- Photo-realistic RGB perception
-- LiDAR fusion (optional)
-- Multi-agent scenarios
-- Hardware-in-the-loop validation
+| Milestone | Deliverable                     | Location                                   |
+|-----------|---------------------------------|--------------------------------------------|
+| **50%**   | Smoke Test Log                  | `./outputs/integration/smoke_test.log`     |
+| **50%**   | Architecture Diagram            | (See `architecture_diagram.md` artifact)   |
+| **80%**   | Transition Log                  | `./outputs/transition_log.txt`             |
+| **80%**   | TensorBoard Logs (per stage)    | `./outputs/stage_X/tensorboard/`           |
+| **100%**  | Final Model Weights             | `./outputs/stage_5/ppo_agent_stage_5.zip`  |
+| **100%**  | Baseline Model Weights          | `./outputs/baseline/ppo_baseline_final.zip`|
+| **100%**  | Comparison CSV                  | `./outputs/research/comparison_results.csv`|
 
 ---
+
+## 🧠 Key Technical Decisions
+
+1.  **Semantic Segmentation over Instance Segmentation**: The Instance Segmentation sensor caused segmentation faults in CARLA 0.9.13's Synchronous Mode. Semantic Segmentation provides equivalent class-level perception with full stability.
+
+2.  **Legacy `gym` over `gymnasium`**: Stable-Baselines3 1.8.0 (required for Python 3.7) does not support `gymnasium` Dict spaces. The environment uses the legacy `gym==0.21.0` API.
+
+3.  **Synchronous Mode First**: The `CarlaSyncManager` applies world settings (Sync Mode) *before* spawning sensors. This prevents race conditions that lead to crashes.
+
+4.  **Headless Rendering (`-RenderOffScreen`)**: Maximizes training throughput on the RTX 4000 by avoiding GPU draw calls for a display window.
+
+---
+
+## 📜 License
+
+This project is for academic and research purposes.

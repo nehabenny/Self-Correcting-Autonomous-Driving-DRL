@@ -1,63 +1,90 @@
 import os
+import numpy as np
+import torch
 from agent_logic import load_agent
-from env_wrapper import make_env
+
+import argparse
+import gym
+from stable_baselines3 import PPO
 
 def test():
     """
-    Visual inference script using the modular codebase.
+    Inference script for CARLA 0.9.13.
     """
-    # Priority: Latest interrupted model -> stage2 final -> final model
-    potential_models = [
-        "models/interrupted_model.zip",
-        "models/stage2_final.zip",
-        "models/final_model.zip",
-        "models/stage1_final.zip"
-    ]
-    
-    model_path = None
-    for path in potential_models:
-        if os.path.exists(path):
-            model_path = path
-            break
+    parser = argparse.ArgumentParser(description="Run inference with a trained agent.")
+    parser.add_argument("--model", type=str, help="Path to the .zip model file")
+    parser.add_argument("--stage", type=int, default=1, help="Curriculum stage to simulate (1-5)")
+    args = parser.parse_args()
 
+    os.environ["USE_CARLA"] = "1"
+    
+    # Priority: Arg > Env Var > Default Search
+    model_path = args.model or os.environ.get("TEST_MODEL_PATH")
+    
     if not model_path:
-        print("❌ No trained model found in ./models/. Please run train.py first.")
-        return
+        # Search defaults based on stage
+        default_path = f"outputs/stage_{args.stage}/final_model_stage_{args.stage}.zip"
+        if os.path.exists(default_path):
+            model_path = default_path
+        else:
+            # Fallback search
+            print(f"⚠️  {default_path} not found. Searching generally...")
+            import glob
+            zips = glob.glob("outputs/**/*.zip", recursive=True)
+            if zips:
+                model_path = max(zips, key=os.path.getmtime)
+            else:
+                print("❌ No trained CARLA model found.")
+                return
 
-    print(f"📡 Loading modular agent from {model_path}...")
+    print(f"📡 Loading agent from {model_path}...")
+    
+    if not os.path.exists(model_path):
+         print(f"❌ Error: Model file '{model_path}' does not exist.")
+         return
+
     try:
-        model = load_agent(model_path)
+        from carla_env import make_carla_env
+        from curriculum_manager import get_carla_curriculum_config
+        
+        stages = get_carla_curriculum_config()
+        # Stage is 1-indexed in args, 0-indexed in list
+        stage_config = stages[args.stage - 1]
+        
+        print(f"🌍 Loading Environment for Stage {args.stage}: {stage_config['name']} (Map: {stage_config['map']})")
+        
+        env = make_carla_env(stage_config)
+        
+        # Load agent
+        # We need to manually load because we might have different internal structures
+        # handled by SB3's load
+        model = PPO.load(model_path, env=env)
+        
     except Exception as e:
-        print(f"❌ Failed to load model: {e}")
+        print(f"❌ Load failed: {e}")
+        import traceback
+        traceback.print_exc()
         return
     
-    print("🌍 Creating environment (Map: SCX)...")
-    env = make_env(render=True, map_type="SCX")
-    
-    print("▶️ Starting simulation. Press Ctrl+C to stop.")
-    obs, info = env.reset()
-    
+    print("▶️ Starting inference (Press Ctrl+C to stop)...")
+    obs = env.reset()
+    total_reward = 0
     try:
-        while True:
-            try:
-                action, _states = model.predict(obs, deterministic=True)
-            except ValueError as e:
-                print("\n❌ SENSOR MISMATCH ERROR:")
-                print(f"Details: {e}")
-                print("\n💡 POSSIBLE FIXES:")
-                print("1. You are trying to load an OLD model (trained with LiDAR) into the NEW vision-only environment.")
-                print("2. Delete your old models: 'rm models/*.zip'")
-                print("3. Re-run training: './driving_env/bin/python3 train.py'")
-                break
-
-            obs, reward, terminated, truncated, info = env.step(action)
-            env.render() 
+        for i in range(1000):
+            action, _state = model.predict(obs, deterministic=True)
+            obs, reward, done, info = env.step(action)
+            total_reward += reward
             
-            if terminated or truncated:
-                print("🔄 Episode finished. Resetting.")
-                obs, info = env.reset()
+            if done:
+                print(f"🔄 Episode Finished. Total Reward: {total_reward:.2f}")
+                total_reward = 0
+                obs = env.reset()
+                
+            if i % 10 == 0:  # More frequent output for visibility
+                print(f"  Step {i} | Speed: {info.get('speed', 0):.1f} km/h | Reward: {reward:.2f}")
+                
     except KeyboardInterrupt:
-        print("\n🛑 Stopping test.")
+        print("\n🛑 Test Validation Stopped by User.")
     finally:
         env.close()
 
